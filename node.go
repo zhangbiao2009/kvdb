@@ -38,7 +38,7 @@ func (node *Node) getKey(i int) []byte {
 	return getByteSlice(node.db.mmap[keyOffset:])
 }
 
-func (node *Node) getKeySize(i int) uint16 {		// 返回key在block内存中占用的空间大小
+func (node *Node) getKeySize(i int) uint16 { // 返回key在block内存中占用的空间大小
 	keyOffset := node.getKeyPtr(i)
 	sz := getByteSliceSize(node.db.mmap[keyOffset:])
 	return uint16(sz)
@@ -49,7 +49,7 @@ func (node *Node) getVal(i int) []byte {
 	return getByteSlice(node.db.mmap[valOffset:])
 }
 
-func (node *Node) getValSize(i int) uint16 {		// 返回val在block内存中占用的空间大小
+func (node *Node) getValSize(i int) uint16 { // 返回val在block内存中占用的空间大小
 	valOffset := node.getValPtr(i)
 	sz := getByteSliceSize(node.db.mmap[valOffset:])
 	return uint16(sz)
@@ -60,10 +60,10 @@ func (node *Node) getKeyPtr(i int) int {
 }
 
 func (node *Node) setKeyPtr(i int, val int) {
-	node.MutateKeyPtrArr(i, uint16(val-node.blockId*BLOCK_SIZE))	// 存储相对于本block开始的偏移量
+	node.MutateKeyPtrArr(i, uint16(val-node.blockId*BLOCK_SIZE)) // 存储相对于本block开始的偏移量
 }
 func (node *Node) clearKeyPtr(i int) {
-	node.setKeyPtr(i, node.blockId*BLOCK_SIZE)		// 这样达到最终keyPtrArr[i] = 0的效果
+	node.setKeyPtr(i, node.blockId*BLOCK_SIZE) // 这样达到最终keyPtrArr[i] = 0的效果
 }
 
 func (node *Node) getValPtr(i int) int {
@@ -71,7 +71,7 @@ func (node *Node) getValPtr(i int) int {
 }
 
 func (node *Node) setValPtr(i int, val int) {
-	node.MutateValPtrArr(i, uint16(val-node.blockId*BLOCK_SIZE)) 	// 存储相对于本block开始的偏移量
+	node.MutateValPtrArr(i, uint16(val-node.blockId*BLOCK_SIZE)) // 存储相对于本block开始的偏移量
 }
 
 func (node *Node) clearValPtr(i int) {

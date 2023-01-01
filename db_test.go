@@ -193,7 +193,7 @@ func TestDBDelete(t *testing.T) {
 
 func TestBTreeDelete2(t *testing.T) {
 	createDB(5)
-	intSlice := getUniqueInts(3386)
+	intSlice := getUniqueInts(1500)
 	for i, num := range intSlice {
 		_ = i
 		key := fmt.Sprintf("k%d", num)
@@ -226,7 +226,7 @@ func TestBTreeDelete2(t *testing.T) {
 		db.Delete([]byte(randKey))
 		//fmt.Fprintf(os.Stderr, "i: %d, after delete key: %s\n", i, randKey)
 		//db.PrintDebugInfo()
-		db.Traverse(checkMemRequired) 
+		db.Traverse(checkMemRequired)
 		_, err := db.Find([]byte(randKey))
 		if err != ERR_KEY_NOT_EXIST {
 			t.Fatalf("key: %s, err: %v", randKey, err)

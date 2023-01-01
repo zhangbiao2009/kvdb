@@ -199,7 +199,7 @@ func (node *Node) printDotGraphLeaf(w io.Writer) {
 	*/
 }
 
-func (db *DB) printDebugInfo(blockId int)  {
+func (db *DB) printDebugInfo(blockId int) {
 	node := loadNode(db, blockId)
 	node.DebugInfo()
 	if node.isLeaf() {
@@ -237,6 +237,7 @@ func (db *DB) Delete(key []byte) {
 	// 删除后，有可能root只剩下一个指针，没有key了，这时候需要去掉多余的root空节点
 	if !rootNode.isLeaf() && rootNode.nKeys() == 0 {
 		db.metaBlock.MutateRootBlockId(rootNode.ChildNodeId(0))
+		db.blockMgr.recycleBlock(rootNode) // 回收旧的root node block
 	}
 }
 
@@ -255,10 +256,13 @@ func (node *Node) deleteInLeaf(key []byte) {
 
 	// assert key == node.keys[i], delete
 	node.delKeyValByIndex(i)
+	if node.nKeys() == 0 { // 完全delete空了，compact一下就没有垃圾了，并且重置了unused_mem_offset，hexdump好看一点
+		node.compactMem()
+	}
 }
 
 func (node *Node) delKeyValByIndex(i int) {
-	node.clearKey(i)		// note: 虽然似乎没用，因为后面的for循环会覆盖这个key指针，但这会正确更新actualMemRequired
+	node.clearKey(i) // note: 虽然似乎没用，因为后面的for循环会覆盖这个key指针，但这会正确更新actualMemRequired
 	node.clearVal(i)
 	for j := i + 1; j < node.nKeys(); j++ {
 		node.setKeyPtr(j-1, node.getKeyPtr(j))
@@ -312,18 +316,12 @@ func (node *Node) mergeWithRightLeaf(right *Node) {
 		j++
 	}
 	left.setNKeys(left.nKeys() + right.nKeys())
-	node.db.blockMgr.recycleBlock(uint32(right.blockId))
+	node.db.blockMgr.recycleBlock(right)
 }
 
 func (node *Node) getLeftMostKey() []byte {
 	return node.getKey(0)
 }
-
-/*
-func (node *Node) findMinLeaf() *Node {
-	return node.ptrs[0].findMinLeaf()
-}
-*/
 
 func (db *DB) delete(node *Node, key []byte) {
 	if node.isLeaf() {
@@ -427,7 +425,7 @@ func (node *Node) mergeWithRight(right *Node, parentKey []byte) {
 	left.setChildBlockId(j, right.getChildBlockId(right.nKeys()))
 	left.setNKeys(leftNKeys + right.nKeys())
 
-	node.db.blockMgr.recycleBlock(uint32(right.blockId))
+	node.db.blockMgr.recycleBlock(right)
 }
 
 func (node *Node) removeMinKeyAndBlockId() (key []byte, blockId int) {
@@ -444,7 +442,7 @@ func (node *Node) appendMaxKeyAndBlockId(key []byte, blockId int) {
 func (node *Node) delKeyandBlockIdByIndex(keyStart, blockIdStart int) ([]byte, int) {
 	deletedKey := node.getKey(keyStart)
 	deletedBlockId := node.getChildBlockId(blockIdStart)
-	node.clearKey(keyStart)		// note: 虽然似乎没用，因为后面的for循环会覆盖这个，但这会正确更新actualMemRequired
+	node.clearKey(keyStart) // note: 虽然似乎没用，因为后面的for循环会覆盖这个，但这会正确更新actualMemRequired
 	for j := keyStart + 1; j < node.nKeys(); j++ {
 		node.setKeyPtr(j-1, node.getKeyPtr(j))
 	}
@@ -720,36 +718,38 @@ func (node *Node) updateVal(i int, val []byte) error { // update val i
 }
 
 func (node *Node) DebugInfo() {
-	fmt.Fprintf(os.Stderr,  "node block id: %d\n", node.blockId)
-	fmt.Fprintf(os.Stderr,  "\t isLeaf: %t\n", node.isLeaf())
-	fmt.Fprintf(os.Stderr,  "\t nKeys: %d\n", node.nKeys())
+	fmt.Fprintf(os.Stderr, "node block id: %d\n", node.blockId)
+	fmt.Fprintf(os.Stderr, "\t isLeaf: %t\n", node.isLeaf())
+	fmt.Fprintf(os.Stderr, "\t nKeys: %d\n", node.nKeys())
+	fmt.Fprintf(os.Stderr, "\t unused_mem_start: %d\n", *node.UnusedMemStart())
+	fmt.Fprintf(os.Stderr, "\t unused_mem_offset: %d\n", *node.UnusedMemOffset())
 	actualMemRequred := *node.ActualMemRequired()
-	fmt.Fprintf(os.Stderr,  "\t actual_mem_required: %d\n", actualMemRequred)
+	fmt.Fprintf(os.Stderr, "\t actual_mem_required: %d\n", actualMemRequred)
 	expectActualMemRequred := uint16(0)
-	fmt.Fprintf(os.Stderr,  "\t keys: ")
+	fmt.Fprintf(os.Stderr, "\t keys: ")
 	for i := 0; i < node.nKeys(); i++ {
 		expectActualMemRequred += node.getKeySize(i)
 		k := node.getKey(i)
-		fmt.Fprintf(os.Stderr,  "%s ", string(k))
+		fmt.Fprintf(os.Stderr, "%s ", string(k))
 	}
 	fmt.Println()
 	if node.isLeaf() {
-		fmt.Fprintf(os.Stderr,  "\t vals: ")
+		fmt.Fprintf(os.Stderr, "\t vals: ")
 		for i := 0; i < node.nKeys(); i++ {
 			expectActualMemRequred += node.getValSize(i)
 			v := node.getVal(i)
-			fmt.Fprintf(os.Stderr,  "%s ", string(v))
+			fmt.Fprintf(os.Stderr, "%s ", string(v))
 		}
 		fmt.Println()
 	} else {
-		fmt.Fprintf(os.Stderr,  "\t child block ids: ")
+		fmt.Fprintf(os.Stderr, "\t child block ids: ")
 		for i := 0; i <= node.nKeys(); i++ {
-			fmt.Fprintf(os.Stderr,  "%d ", node.getChildBlockId(i))
+			fmt.Fprintf(os.Stderr, "%d ", node.getChildBlockId(i))
 		}
 		fmt.Println()
 	}
 	if expectActualMemRequred != actualMemRequred {
-		fmt.Fprintf(os.Stderr,  "error not equal: actualMemRequred: %d, expectActualMemRequred: %d\n", actualMemRequred, expectActualMemRequred)
+		fmt.Fprintf(os.Stderr, "error not equal: actualMemRequred: %d, expectActualMemRequred: %d\n", actualMemRequred, expectActualMemRequred)
 	}
 	fmt.Println()
 }
