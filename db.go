@@ -34,9 +34,9 @@ type DB struct {
 }
 
 // 创建DB文件，并且格式化
-func CreateDB(fileName string, maxKeySize int, degree int) (*DB, error) {
+func CreateDB(filePath string, maxKeySize int, degree int) (*DB, error) {
 	defaultDBSize := 20 * 1024 * 1024                                       // 20M
-	f, err := os.OpenFile(fileName, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644) // 打开的同时，如果file存在的话，O_TRUNC会清空file
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644) // 打开的同时，如果file存在的话，O_TRUNC会清空file
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func CreateDB(fileName string, maxKeySize int, degree int) (*DB, error) {
 }
 
 func OpenDB(filePath string) (*DB, error) {
-	f, err := os.OpenFile("test.db", os.O_RDWR, 0644)
+	f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}

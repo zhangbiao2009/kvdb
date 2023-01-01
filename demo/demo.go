@@ -9,7 +9,7 @@ import (
 
 func main() {
 	maxKeySize := 128
-	dbFilePath := "./test.db"
+	dbFilePath := "./test1.db"
 	btreeDegree := 256
 	db, err := btreedb.CreateDB(dbFilePath, maxKeySize, btreeDegree)
 	if err != nil {

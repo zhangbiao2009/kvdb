@@ -33,11 +33,16 @@ func (mgr *BlockMgr) buildMetaBlock(degree int) *utils.MetaBlock {
 	utils.MetaBlockAddNkeys(builder, 0)
 	utils.MetaBlockAddRootBlockId(builder, uint32(rootBlockId))
 	utils.MetaBlockAddDegree(builder, uint32(degree))
+	utils.MetaBlockAddRecycleBlockStart(builder, 0)
+	utils.MetaBlockAddRecycleBlockEnd(builder, 0)
 	builder.Finish(utils.MetaBlockEnd(builder))
 	buf := builder.FinishedBytes()
 	copy(mgr.mmap[start:], buf) // 把构造好的metablock数据copy到mmap内存中
 
 	metaBlock := utils.GetRootAsMetaBlock(mgr.mmap[start:], 0)
+	recycleBlockStart := uint32(BLOCK_MAGIC_SIZE + len(buf))
+	metaBlock.MutateRecycleBlockStart(recycleBlockStart)
+	metaBlock.MutateRecycleBlockEnd(recycleBlockStart)
 	return metaBlock
 }
 
@@ -73,8 +78,8 @@ func (mgr *BlockMgr) popRecycledBlock() (blockId uint32, ok bool) {
 }
 
 func (mgr *BlockMgr) recycleBlock(node *Node) {
-	unusedMemOffset := node.UnusedMemOffset()
 	blockId := node.blockId
+	unusedMemOffset := node.UnusedMemOffset()
 	start := blockId * BLOCK_SIZE
 	end := start + int(*unusedMemOffset)
 	for i := start; i < end; i++ {
