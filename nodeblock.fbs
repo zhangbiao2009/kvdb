@@ -1,0 +1,18 @@
+namespace utils;
+
+table NodeBlock {
+    is_leaf:bool = null (id:0);     // 是否是叶子节点
+    padding:byte = null (id:1);     // padding，作用待定
+    nkeys:uint16 = null (id:2);     // 这个node当前有多少个key
+    actual_mem_required:uint16 = null (id:3);   // 当前node上的key和val实际需要多少空间，用来计算compact能回收多少空间
+    unused_mem_start:uint16 = null (id:4);     // 当前block的空闲空间初始偏移量，不会修改，compact内存时会用
+    unused_mem_offset:uint16 = null (id:5);     // 当前block的空闲空间偏移量，初始值和unused_mem_start相同，插入或修改数据会用
+    key_ptr_arr:[uint16] (id:6);        // 预先分配的key指针数组，每个key指针两个字节, 存key实际数据的偏移量
+    val_ptr_arr:[uint16] (id:7);        // 预先分配的val指针数组，每个val指针两个字节，存val实际数据的偏移量，只有叶子节点有
+    child_node_id:[uint32] (id:8);      // 预先分配的child block id数组，只有中间节点有
+    /* note: 这个block的剩下的空间由程序通过unused_mem_offset来管理，为避免write flatbuffers的时候无谓拷贝大量空白数据，
+    就不在这里定义了，这样可以使得这个结构只需要较少的内存即可构造起来
+    */
+}
+
+root_type NodeBlock;

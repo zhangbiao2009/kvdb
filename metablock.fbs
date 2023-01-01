@@ -1,0 +1,12 @@
+namespace utils;
+
+table MetaBlock {
+    degree:uint32 = null (id : 0);      // B+tree的degree
+    root_block_id:uint32 = null (id : 1);   // root节点的block id
+    nkeys:uint64 = null (id : 2);       // 这颗B+tree总共有多少个key
+    nused_blocks:uint32 = null (id : 3); // 目前用了多少个block，分配新的block时需要
+    recycle_block_start:uint32 = null (id : 4);  // recycle blocks 数组的首地址，每个元素是一个recycled的block id
+    recycle_block_end:uint32 = null (id : 5);  // recycle blocks 数组的end，是最后一个元素的下一个地址，类似于C++里vector的end
+}
+
+root_type MetaBlock;
