@@ -2,7 +2,6 @@ package btreedb
 
 import (
 	"btreedb/utils"
-	"encoding/binary"
 	"fmt"
 
 	"github.com/edsrzf/mmap-go"
@@ -84,14 +83,6 @@ func (mgr *BlockMgr) popRecycledBlock() (blockId uint32, ok bool) {
 	putUint32(mgr.mmap[recyleBlockEnd-4:], 0) // 置空
 	mgr.metaBlock.MutateRecycleBlockEnd(recyleBlockEnd - 4)
 	return blockId, true
-}
-
-func putUint32(b []byte, v uint32) {
-	binary.LittleEndian.PutUint32(b, v)
-}
-
-func getUint32(b []byte) uint32 {
-	return binary.LittleEndian.Uint32(b)
 }
 
 func (mgr *BlockMgr) recycleBlock(node *Node) {

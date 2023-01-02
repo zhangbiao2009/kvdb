@@ -4,7 +4,6 @@ import (
 	"btreedb/utils"
 	"bufio"
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -176,29 +175,6 @@ func (db *DB) printDotGraph(w io.Writer, blockId int) {
 	}
 }
 
-func (node *Node) printDotGraphLeaf(w io.Writer) {
-	fmt.Fprintf(w, "node%d [label = \"", node.blockId)
-	fmt.Fprintf(w, "<f0> ") // for prev ptr
-	for i := 0; i < node.nKeys(); i++ {
-		fmt.Fprintf(w, "|<f%d> %v", 2*i+1, string(node.getKey(i))) // for the keys[i]
-		//fmt.Fprintf(w, "|<f%d> val:%d", 2*i+1, node.vals[i])	// for the vals[i]
-		fmt.Fprintf(w, "|<f%d> v", 2*i+2) // for the vals[i]
-	}
-	nextPtrFid := 2*node.nKeys() + 1
-	fmt.Fprintf(w, "|<f%d> ", nextPtrFid) // for next ptr
-	fmt.Fprintln(w, "\"];")
-	// 打印这两个指针会导致图形layout不好看，没找到好办法前暂时不打印
-	/*
-		if node.prev != nil {
-			fid := 2*node.prev.nkeys + 1
-			fmt.Fprintf(w, "\"node%d\":f0 -> \"node%d\":f%d;\n", node.id, node.prev.getNodeId(), fid) // for prev ptr edge
-		}
-		if node.next != nil {
-			fmt.Fprintf(w, "\"node%d\":f%d -> \"node%d\":f0;\n", node.id, nextPtrFid, node.next.getNodeId()) // for next ptr edge
-		}
-	*/
-}
-
 func (db *DB) printDebugInfo(blockId int) {
 	node := loadNode(db, blockId)
 	node.DebugInfo()
@@ -317,10 +293,6 @@ func (node *Node) mergeWithRightLeaf(right *Node) {
 	}
 	left.setNKeys(left.nKeys() + right.nKeys())
 	node.db.blockMgr.recycleBlock(right)
-}
-
-func (node *Node) getLeftMostKey() []byte {
-	return node.getKey(0)
 }
 
 func (db *DB) delete(node *Node, key []byte) {
@@ -532,22 +504,6 @@ func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSibli
 	return nil, nil, nil
 }
 
-func (node *Node) findByKey(key []byte) ([]byte, error) {
-	i := 0
-	for ; i < node.nKeys(); i++ {
-		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
-		if cmp == 0 { // found
-			val := node.getVal(i)
-			return val, nil
-		}
-		if cmp < 0 {
-			return nil, ERR_KEY_NOT_EXIST
-		}
-	}
-	return nil, ERR_KEY_NOT_EXIST
-}
-
 func (node *Node) insertKVInLeaf(key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
 	i := 0
 	for ; i < node.nKeys(); i++ {
@@ -591,169 +547,6 @@ func (node *Node) insertKVInLeaf(key, val []byte) (promotedKey []byte, newSiblin
 	return nil, nil, nil
 }
 
-func (node *Node) insertKvInPos(i int, key, val []byte) error {
-	sizeKey := calcRequiredMemSerialized(key)
-	sizeVal := calcRequiredMemSerialized(val)
-	if err := node.spaceIsEnough(int(sizeKey + sizeVal)); err != nil {
-		return err
-	}
-	node.insertKeyInPos(i, key)
-	_, err := node.insertValInPos(i, val) // TODO: 前面检查内存够不够了，这里是不是可以不检查了
-	return err
-}
-
-// TODO: insertKeyInPos一定能成功，所以需要根据最大key size预留足够的空间
-func (node *Node) insertKeyInPos(i int, key []byte) uint16 {
-	sizeKey := calcRequiredMemSerialized(key)
-	if err := node.spaceIsEnough(int(sizeKey)); err != nil { // TODO: 调用spaceIsEnough是为了触发可能需要compact，但现在看起来意图不明显，需要改进
-		panic(err)
-	}
-	newKeyOffset, _ := node.appendToFreeMem(key)
-	node.setKeyPtr(i, newKeyOffset)
-	actualMem := *node.ActualMemRequired()
-	node.MutateActualMemRequired(actualMem + sizeKey)
-	return sizeKey
-}
-
-func (node *Node) insertValInPos(i int, val []byte) (uint16, error) {
-	sizeVal := calcRequiredMemSerialized(val)
-	err := node.spaceIsEnough(int(sizeVal))
-	if err != nil {
-		return 0, err
-	}
-	newValOffset, _ := node.appendToFreeMem(val)
-	node.setValPtr(i, newValOffset)
-
-	actualMem := *node.ActualMemRequired()
-	node.MutateActualMemRequired(actualMem + sizeVal)
-	return uint16(sizeVal), nil
-}
-
-func (node *Node) appendToFreeMem(content []byte) (contentOffset int, contentSize uint16) {
-	ununsedOffset := int(*node.UnusedMemOffset())
-	freeMemOffset := ununsedOffset + node.blockId*BLOCK_SIZE
-	size := putByteSlice(node.db.mmap[freeMemOffset:], content)
-	node.MutateUnusedMemOffset(uint16(ununsedOffset + size))
-	return freeMemOffset, uint16(size) // TODO: 如果允许超大的value(跨越多个block的)， uint16也许不够表示value的size
-}
-
-/*
-检查剩余空间是否能容纳valSize大小的数据，如果可以直接返回；如果不行先计算compact后能不能容纳下，
-如果可以compact后返回，如果不行返回error
-暂时先这么做，后续策略可允许value有overflow blocks；
-*/
-func (node *Node) spaceIsEnough(valSize int) error {
-	ununsedOffset := int(*node.UnusedMemOffset())
-	if BLOCK_SIZE-ununsedOffset >= valSize { // 空间够
-		return nil
-	}
-
-	actualMem := *node.ActualMemRequired()
-	memAvailable := BLOCK_SIZE - *node.UnusedMemStart() - actualMem
-
-	if memAvailable >= uint16(valSize) { // 压缩后空间够
-		node.compactMem()
-		return nil
-	}
-
-	err := errors.New("not enough memory in this block")
-	return err // 压缩后也不够
-}
-
-func (node *Node) compactMem() {
-	unusedMemStart := int(*node.UnusedMemStart())
-	tmpMem := make([]byte, *node.UnusedMemOffset()-uint16(unusedMemStart)) // 大小正好覆盖所有写过的空间
-	start := 0
-	for i := 0; i < node.nKeys(); i++ {
-		key := node.getKey(i)
-		size := putByteSlice(tmpMem[start:], key)
-		node.MutateKeyPtrArr(i, uint16(unusedMemStart+start)) // 更新key的偏移量
-		start += size
-		if node.isLeaf() {
-			val := node.getVal(i)
-			size = putByteSlice(tmpMem[start:], val) // 更新val的偏移量
-			node.MutateValPtrArr(i, uint16(unusedMemStart+start))
-			start += size
-		}
-	}
-	// copy compact之后的内容，顺带清空没用的空间
-	copy(node.db.mmap[node.blockId*BLOCK_SIZE+unusedMemStart:], tmpMem)
-	node.MutateUnusedMemOffset(uint16(unusedMemStart + start))
-}
-
-func (node *Node) clearKey(i int) {
-	sizeKey := node.getKeySize(i)
-	node.clearKeyPtr(i)
-	actualMem := *node.ActualMemRequired()
-	node.MutateActualMemRequired(actualMem - sizeKey)
-}
-
-func (node *Node) updateKey(i int, key []byte) { // update key i
-	// 为简化实现，直接append，原先空间作废
-	sizeOldKey := node.getKeySize(i)
-	node.insertKeyInPos(i, key)
-
-	actualMem := *node.ActualMemRequired()
-	node.MutateActualMemRequired(actualMem - sizeOldKey)
-}
-
-func (node *Node) clearVal(i int) {
-	sizeVal := node.getValSize(i)
-	node.clearValPtr(i)
-	actualMem := *node.ActualMemRequired()
-	node.MutateActualMemRequired(actualMem - sizeVal)
-}
-
-func (node *Node) updateVal(i int, val []byte) error { // update val i
-	// 可以先看val i原先所占的大小够不够，如果够就原地修改，如果不够就新分配空间写入，原来的val i所占的空间变为garbage
-	// 为简化实现，直接append，原先空间作废
-	sizeOldVal := node.getValSize(i)
-	_, err := node.insertValInPos(i, val)
-	if err != nil {
-		return err
-	}
-	actualMem := *node.ActualMemRequired()
-	node.MutateActualMemRequired(actualMem - sizeOldVal)
-	return nil
-}
-
-func (node *Node) DebugInfo() {
-	fmt.Fprintf(os.Stderr, "node block id: %d\n", node.blockId)
-	fmt.Fprintf(os.Stderr, "\t isLeaf: %t\n", node.isLeaf())
-	fmt.Fprintf(os.Stderr, "\t nKeys: %d\n", node.nKeys())
-	fmt.Fprintf(os.Stderr, "\t unused_mem_start: %d\n", *node.UnusedMemStart())
-	fmt.Fprintf(os.Stderr, "\t unused_mem_offset: %d\n", *node.UnusedMemOffset())
-	actualMemRequred := *node.ActualMemRequired()
-	fmt.Fprintf(os.Stderr, "\t actual_mem_required: %d\n", actualMemRequred)
-	expectActualMemRequred := uint16(0)
-	fmt.Fprintf(os.Stderr, "\t keys: ")
-	for i := 0; i < node.nKeys(); i++ {
-		expectActualMemRequred += node.getKeySize(i)
-		k := node.getKey(i)
-		fmt.Fprintf(os.Stderr, "%s ", string(k))
-	}
-	fmt.Println()
-	if node.isLeaf() {
-		fmt.Fprintf(os.Stderr, "\t vals: ")
-		for i := 0; i < node.nKeys(); i++ {
-			expectActualMemRequred += node.getValSize(i)
-			v := node.getVal(i)
-			fmt.Fprintf(os.Stderr, "%s ", string(v))
-		}
-		fmt.Println()
-	} else {
-		fmt.Fprintf(os.Stderr, "\t child block ids: ")
-		for i := 0; i <= node.nKeys(); i++ {
-			fmt.Fprintf(os.Stderr, "%d ", node.getChildBlockId(i))
-		}
-		fmt.Println()
-	}
-	if expectActualMemRequred != actualMemRequred {
-		fmt.Fprintf(os.Stderr, "error not equal: actualMemRequred: %d, expectActualMemRequred: %d\n", actualMemRequred, expectActualMemRequred)
-	}
-	fmt.Println()
-}
-
 func (db *DB) loadMetaBlock() {
 	// TODO:
 	start := BLOCK_MAGIC_SIZE // skip block start magic
@@ -764,31 +557,4 @@ func (db *DB) loadMetaBlock() {
 func (db *DB) Close() {
 	db.mmap.Unmap()
 	db.file.Close()
-}
-
-func putByteSlice(b, s []byte) int {
-	slen := uint64(len(s))
-	nbytes := binary.PutUvarint(b, slen)
-	copy(b[nbytes:], s)
-	return nbytes + len(s)
-}
-
-// 从序列化好的内存中读取一个byte slice出来
-func getByteSlice(b []byte) []byte {
-	slen, nbytes := binary.Uvarint(b)
-	resSlice := make([]byte, slen)
-	copy(resSlice[:slen], b[nbytes:nbytes+int(slen)])
-	return resSlice
-}
-
-func getByteSliceSize(b []byte) int { // 获取当前存储在内存中的byte slice占用的空间的大小
-	slen, nbytes := binary.Uvarint(b)
-	return nbytes + int(slen)
-}
-
-func calcRequiredMemSerialized(s []byte) uint16 { // 计算s序列化后需要占用的空间的大小
-	b := make([]byte, 10) // varint 最多需要10个字节
-	slen := len(s)
-	nbytes := binary.PutUvarint(b, uint64(slen))
-	return uint16(nbytes + slen)
 }
