@@ -2,6 +2,9 @@ package btreedb
 
 import (
 	"btreedb/utils"
+	"encoding/binary"
+	"fmt"
+	"os"
 
 	"github.com/edsrzf/mmap-go"
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -50,8 +53,8 @@ func (mgr *BlockMgr) newBlock() (uint32, Offset) {
 	blockId, ok := mgr.popRecycledBlock()
 	if !ok {
 		blockId = *mgr.metaBlock.NusedBlocks()
+		mgr.metaBlock.MutateNusedBlocks(blockId + 1)
 	}
-	mgr.metaBlock.MutateNusedBlocks(blockId + 1)
 	return mgr.allocBlock(blockId)
 }
 
@@ -73,12 +76,32 @@ func (mgr *BlockMgr) allocBlock(blockId uint32) (uint32, Offset) {
 }
 
 func (mgr *BlockMgr) popRecycledBlock() (blockId uint32, ok bool) {
-	// TODO
-	return 0, false
+	recyleBlockEnd := *mgr.metaBlock.RecycleBlockEnd()
+	recyleBlockStart := *mgr.metaBlock.RecycleBlockStart()
+	if recyleBlockStart == recyleBlockEnd {
+		return 0, false
+	}
+	blockId = getUint32(mgr.mmap[recyleBlockEnd-4:])
+	mgr.metaBlock.MutateRecycleBlockEnd(recyleBlockEnd - 4)
+	return blockId, true
+}
+
+func putUint32(b []byte, v uint32) {
+	binary.LittleEndian.PutUint32(b, v)
+}
+
+func getUint32(b []byte) uint32 {
+	return binary.LittleEndian.Uint32(b)
 }
 
 func (mgr *BlockMgr) recycleBlock(node *Node) {
 	blockId := node.blockId
+	recyleBlockEnd := *mgr.metaBlock.RecycleBlockEnd()
+	if recyleBlockEnd >= BLOCK_SIZE { // TODO: 暂时没有处理recycle block id太多，超出block边界的情况
+		panic(fmt.Errorf("recyleBlockEnd too big, recyleBlockEnd: %d\n", recyleBlockEnd))
+	}
+	putUint32(mgr.mmap[recyleBlockEnd:], uint32(node.blockId))
+	mgr.metaBlock.MutateRecycleBlockEnd(recyleBlockEnd + 4)
 	unusedMemOffset := node.UnusedMemOffset()
 	start := blockId * BLOCK_SIZE
 	end := start + int(*unusedMemOffset)
