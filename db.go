@@ -218,6 +218,9 @@ func (db *DB) Delete(key []byte) {
 }
 
 func (node *Node) deleteInLeaf(key []byte) {
+	if node.nKeys() == 0 { // 这种情况只有root为leaf节点，并且没有key的情况下才会发生
+		return
+	}
 	i := 0
 	for ; i < node.nKeys(); i++ {
 		k := node.getKey(i)

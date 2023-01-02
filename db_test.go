@@ -154,6 +154,12 @@ func TestDBInsertSplit(t *testing.T) {
 	*/
 }
 
+func TestDBDeleteWithoutInsert(t *testing.T) {
+	createDB(5)
+	key := []byte("key1")
+	db.Delete(key)
+}
+
 func TestDBDelete(t *testing.T) {
 	createDB(5)
 	m := map[string]string{
