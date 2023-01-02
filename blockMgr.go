@@ -4,7 +4,6 @@ import (
 	"btreedb/utils"
 	"encoding/binary"
 	"fmt"
-	"os"
 
 	"github.com/edsrzf/mmap-go"
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -82,6 +81,7 @@ func (mgr *BlockMgr) popRecycledBlock() (blockId uint32, ok bool) {
 		return 0, false
 	}
 	blockId = getUint32(mgr.mmap[recyleBlockEnd-4:])
+	putUint32(mgr.mmap[recyleBlockEnd-4:], 0) // 置空
 	mgr.metaBlock.MutateRecycleBlockEnd(recyleBlockEnd - 4)
 	return blockId, true
 }

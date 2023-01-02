@@ -224,7 +224,6 @@ func TestBTreeDelete2(t *testing.T) {
 		_ = i
 		randKey := fmt.Sprintf("k%d", ri)
 		db.Delete([]byte(randKey))
-		//fmt.Fprintf(os.Stderr, "i: %d, after delete key: %s\n", i, randKey)
 		//db.PrintDebugInfo()
 		db.Traverse(checkMemRequired)
 		_, err := db.Find([]byte(randKey))
@@ -232,6 +231,14 @@ func TestBTreeDelete2(t *testing.T) {
 			t.Fatalf("key: %s, err: %v", randKey, err)
 		}
 		db.Traverse(checkMemRequired)
+	}
+	for i := 0; i < len(intSlice); i++ {
+		num := intSlice[i]
+		key := fmt.Sprintf("k%d", num)
+		key2 := fmt.Sprintf("kk%d", num)
+		val := fmt.Sprintf("v%d", num)
+		db.Insert([]byte(key), []byte(val))
+		db.Insert([]byte(key2), []byte(val))
 	}
 	db.PrintDebugInfo()
 }
