@@ -80,7 +80,7 @@ func OpenDB(filePath string) (*DB, error) {
 func (db *DB) Init(degree int) {
 	db.metaBlock = db.blockMgr.buildMetaBlock(degree)
 	db.blockMgr.setMetaBlock(db.metaBlock)
-	root := newLeafNode(db) // for btree root node
+	root := db.newLeafNode() // for btree root node
 	_ = root
 }
 
@@ -94,7 +94,7 @@ func (db *DB) Insert(key, val []byte) error {
 	if rightSibling == nil {
 		return nil
 	}
-	newRoot := newInternalNode(db)
+	newRoot := db.newInternalNode()
 	newRoot.insertKeyInPos(0, promotedKey)
 	newRoot.setNKeys(1)
 	newRoot.setChildBlockId(0, rootBlockId)
@@ -111,7 +111,7 @@ func (db *DB) Traverse(f func(*Node) bool) {
 	db.traverse(int(*db.metaBlock.RootBlockId()), f)
 }
 func (db *DB) traverse(blockId int, f func(*Node) bool) bool {
-	node := loadNode(db, blockId)
+	node := db.loadNode(blockId)
 	exit := f(node)
 	if exit {
 		return true
@@ -152,7 +152,7 @@ func (db *DB) PrintDotGraph2(fileName string) {
 }
 
 func (db *DB) printDotGraph(w io.Writer, blockId int) {
-	node := loadNode(db, blockId)
+	node := db.loadNode(blockId)
 	if node.isLeaf() {
 		node.printDotGraphLeaf(w)
 		return
@@ -175,7 +175,7 @@ func (db *DB) printDotGraph(w io.Writer, blockId int) {
 }
 
 func (db *DB) printDebugInfo(blockId int) {
-	node := loadNode(db, blockId)
+	node := db.loadNode(blockId)
 	node.DebugInfo()
 	if node.isLeaf() {
 		return
@@ -188,7 +188,7 @@ func (db *DB) printDebugInfo(blockId int) {
 }
 
 func (db *DB) find(blockId int, key []byte) ([]byte, error) {
-	node := loadNode(db, blockId)
+	node := db.loadNode(blockId)
 	if node.isLeaf() {
 		i, isEqual := node.findIndexInLeafByKey(key)
 		if !isEqual {
@@ -204,7 +204,7 @@ func (db *DB) find(blockId int, key []byte) ([]byte, error) {
 
 func (db *DB) Delete(key []byte) {
 	rootBlockId := int(*db.metaBlock.RootBlockId())
-	rootNode := loadNode(db, rootBlockId)
+	rootNode := db.loadNode(rootBlockId)
 	db.delete(rootNode, key)
 	// 删除后，有可能root只剩下一个指针，没有key了，这时候需要去掉多余的root空节点
 	if !rootNode.isLeaf() && rootNode.nKeys() == 0 {
@@ -213,65 +213,20 @@ func (db *DB) Delete(key []byte) {
 	}
 }
 
-func (node *Node) deleteInLeaf(key []byte) {
-	i, isEqual := node.findIndexInLeafByKey(key)
-	if !isEqual { // not found
-		return
-	}
-	// assert key == node.keys[i], delete
-	node.delKeyValByIndex(i)
-	if node.nKeys() == 0 { // 完全delete空了，compact一下就没有垃圾了，并且重置了unused_mem_offset，hexdump好看一点
-		node.compactMem()
-	}
-}
-
-func (node *Node) delKeyValByIndex(i int) {
-	node.clearKey(i) // note: 虽然似乎没用，因为后面的for循环会覆盖这个key指针，但这会正确更新actualMemRequired
-	node.clearVal(i)
-	for j := i + 1; j < node.nKeys(); j++ {
-		node.setKeyPtr(j-1, node.getKeyPtr(j))
-		node.setValPtr(j-1, node.getValPtr(j))
-	}
-	node.clearKeyPtr(node.nKeys() - 1)
-	node.clearValPtr(node.nKeys() - 1)
-	node.MutateNkeys(*node.Nkeys() - 1)
-}
-
-func (node *Node) removeMinKeyVal() (key, val []byte) {
-	key = node.getKey(0)
-	val = node.getVal(0)
-	node.delKeyValByIndex(0)
-	return
-}
-
-func (node *Node) removeMaxKeyVal() (key, val []byte) {
-	nkeys := node.nKeys()
-	key = node.getKey(nkeys - 1)
-	val = node.getVal(nkeys - 1)
-	node.delKeyValByIndex(nkeys - 1)
-	return
-}
-
-func (node *Node) appendMaxKeyVal(key, val []byte) {
-	node.insertKvInPos(node.nKeys(), key, val)
-	node.setNKeys(node.nKeys() + 1)
-}
-
-func (node *Node) stealFromLeftLeaf(left *Node) (midKey []byte) {
+func (db *DB) stealFromLeftLeaf(node *Node, left *Node) (midKey []byte) {
 	key, val := left.removeMaxKeyVal()
-	node.insertKVInLeaf(key, val) // TODO: 是不是专门写个函数会好一点，不调用insertKv；
-	return key                    // note: key is exactly the min key in curr
+	db.insertKVInLeaf(node, key, val) // TODO: 是不是专门写个函数会好一点，不调用insertKv；
+	return key                        // note: key is exactly the min key in curr
 }
 
-func (node *Node) stealFromRightLeaf(right *Node) (midKey []byte) {
+func (db *DB) stealFromRightLeaf(node *Node, right *Node) (midKey []byte) {
 	key, val := right.removeMinKeyVal()
 	node.appendMaxKeyVal(key, val)
 	return right.getLeftMostKey()
 }
 
-func (node *Node) mergeWithRightLeaf(right *Node) {
+func (db *DB) mergeWithRightLeaf(left *Node, right *Node) {
 	//merge的时候，把在右边的key和val都copy过来，
-	left := node
 	j := left.nKeys()
 	for i := 0; i < right.nKeys(); i++ {
 		key := right.getKey(i)
@@ -280,7 +235,7 @@ func (node *Node) mergeWithRightLeaf(right *Node) {
 		j++
 	}
 	left.setNKeys(left.nKeys() + right.nKeys())
-	node.db.blockMgr.recycleBlock(right)
+	db.blockMgr.recycleBlock(right)
 }
 
 func (db *DB) delete(node *Node, key []byte) {
@@ -290,7 +245,7 @@ func (db *DB) delete(node *Node, key []byte) {
 	}
 	i := node.findChildIndexByKey(key)
 	childBlockId := node.getChildBlockId(i)
-	childNode := loadNode(db, childBlockId)
+	childNode := db.loadNode(childBlockId)
 	db.delete(childNode, key)
 
 	meta := db.metaBlock
@@ -299,24 +254,24 @@ func (db *DB) delete(node *Node, key []byte) {
 		// try to steal from siblings
 		// right sibling exists and can steal
 		rightBlockId := node.getChildBlockId(i + 1)
-		rightNode := loadNode(db, rightBlockId)
+		rightNode := db.loadNode(rightBlockId)
 		if i+1 <= node.nKeys() && rightNode.nKeys() > minKeys {
-			midKey := childNode.stealFromRight(rightNode, node.getKey(i))
+			midKey := db.stealFromRight(childNode, rightNode, node.getKey(i))
 			node.updateKey(i, midKey) // update the key
 			return
 		}
 		// left sibling exists and can steal
 		leftBlockId := node.getChildBlockId(i - 1)
-		leftNode := loadNode(db, leftBlockId)
+		leftNode := db.loadNode(leftBlockId)
 		if i-1 >= 0 && leftNode.nKeys() > minKeys {
-			midKey := childNode.stealFromLeft(leftNode, node.getKey(i-1))
+			midKey := db.stealFromLeft(childNode, leftNode, node.getKey(i-1))
 			node.updateKey(i-1, midKey)
 			return
 		}
 
 		// if steal not possible, try to merge
 		if i+1 <= node.nKeys() { // right sibling exists
-			childNode.mergeWithRight(rightNode, node.getKey(i))
+			db.mergeWithRight(childNode, rightNode, node.getKey(i))
 			//因为right sibling不应该存在了，所以parent对应的key和ptr也删除；
 			node.delKeyandBlockIdByIndex(i, i+1)
 			return
@@ -324,16 +279,16 @@ func (db *DB) delete(node *Node, key []byte) {
 
 		if i-1 >= 0 { // left sibling exists
 			// 合并到左边的sibling去
-			leftNode.mergeWithRight(childNode, node.getKey(i-1))
+			db.mergeWithRight(leftNode, childNode, node.getKey(i-1))
 			node.delKeyandBlockIdByIndex(i-1, i)
 			return
 		}
 	}
 }
 
-func (node *Node) stealFromLeft(left *Node, parentKey []byte) (midKey []byte) {
+func (db *DB) stealFromLeft(node *Node, left *Node, parentKey []byte) (midKey []byte) {
 	if left.isLeaf() {
-		return node.stealFromLeftLeaf(left)
+		return db.stealFromLeftLeaf(node, left)
 	}
 	// internal node
 	/* 要拿到key来自于父节点，还要从left sibling那最大的一个指针过来，作为这边最小的指针，
@@ -344,9 +299,9 @@ func (node *Node) stealFromLeft(left *Node, parentKey []byte) (midKey []byte) {
 	return key
 }
 
-func (node *Node) stealFromRight(right *Node, parentKey []byte) (midKey []byte) {
+func (db *DB) stealFromRight(node *Node, right *Node, parentKey []byte) (midKey []byte) {
 	if right.isLeaf() {
-		return node.stealFromRightLeaf(right)
+		return db.stealFromRightLeaf(node, right)
 	}
 	// internal node
 	/* 要拿到key来自于父节点，还要从right sibling那最小的一个指针过来，作为这边最大的指针，
@@ -357,15 +312,14 @@ func (node *Node) stealFromRight(right *Node, parentKey []byte) (midKey []byte) 
 	return key
 }
 
-func (node *Node) mergeWithRight(right *Node, parentKey []byte) {
-	if node.isLeaf() {
-		node.mergeWithRightLeaf(right)
+func (db *DB) mergeWithRight(left *Node, right *Node, parentKey []byte) {
+	if left.isLeaf() {
+		db.mergeWithRightLeaf(left, right)
 		return
 	}
 	/* 和叶子节点的merge不同，需要先把parent的key copy过来，
 	然后copy right sibling的key和ptr；然后删除parent的key和它相邻的右边的指针
 	*/
-	left := node
 	leftNKeys := left.nKeys()
 	left.insertKeyInPos(leftNKeys, parentKey)
 	leftNKeys++
@@ -378,58 +332,13 @@ func (node *Node) mergeWithRight(right *Node, parentKey []byte) {
 	left.setChildBlockId(j, right.getChildBlockId(right.nKeys()))
 	left.setNKeys(leftNKeys + right.nKeys())
 
-	node.db.blockMgr.recycleBlock(right)
-}
-
-func (node *Node) removeMinKeyAndBlockId() (key []byte, blockId int) {
-	return node.delKeyandBlockIdByIndex(0, 0)
-}
-
-func (node *Node) appendMaxKeyAndBlockId(key []byte, blockId int) {
-	nKeys := node.nKeys()
-	node.insertKeyInPos(nKeys, key)
-	node.setChildBlockId(nKeys+1, blockId)
-	node.setNKeys(nKeys + 1)
-}
-
-func (node *Node) delKeyandBlockIdByIndex(keyStart, blockIdStart int) ([]byte, int) {
-	deletedKey := node.getKey(keyStart)
-	deletedBlockId := node.getChildBlockId(blockIdStart)
-	node.clearKey(keyStart) // note: 虽然似乎没用，因为后面的for循环会覆盖这个，但这会正确更新actualMemRequired
-	for j := keyStart + 1; j < node.nKeys(); j++ {
-		node.setKeyPtr(j-1, node.getKeyPtr(j))
-	}
-	node.clearKeyPtr(node.nKeys() - 1)
-	for j := blockIdStart + 1; j <= node.nKeys(); j++ {
-		node.setChildBlockId(j-1, node.getChildBlockId(j))
-	}
-	node.setChildBlockId(node.nKeys(), 0)
-	node.setNKeys(node.nKeys() - 1)
-	return deletedKey, deletedBlockId
-}
-
-func (node *Node) removeMaxKeyAndBlockId() (key []byte, blockId int) {
-	lastKeyIdx := node.nKeys() - 1
-	lastBlockIdIdx := node.nKeys()
-	return node.delKeyandBlockIdByIndex(lastKeyIdx, lastBlockIdIdx)
-}
-
-func (node *Node) appendMinKeyAndBlockId(key []byte, ptr int) {
-	node.setNKeys(node.nKeys() + 1)
-	for j := node.nKeys() - 1; j > 0; j-- {
-		node.setKeyPtr(j, node.getKeyPtr(j-1))
-	}
-	for j := node.nKeys(); j > 0; j-- {
-		node.setChildBlockId(j, node.getChildBlockId(j-1))
-	}
-	node.insertKeyInPos(0, key)
-	node.setChildBlockId(0, ptr)
+	db.blockMgr.recycleBlock(right)
 }
 
 func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
-	node := loadNode(db, blockId)
+	node := db.loadNode(blockId)
 	if node.isLeaf() {
-		return node.insertKVInLeaf(key, val)
+		return db.insertKVInLeaf(node, key, val)
 	}
 	// internal node
 	i := node.findChildIndexByKey(key)
@@ -452,7 +361,7 @@ func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSibli
 
 	if node.needSplit() {
 		deg := node.degree()
-		rightSibling := newInternalNode(db)
+		rightSibling := db.newInternalNode()
 		nLeft := deg / 2
 		nRight := deg - nLeft - 1
 		l := node.nKeys() - 1
@@ -477,7 +386,7 @@ func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSibli
 	return nil, nil, nil
 }
 
-func (node *Node) insertKVInLeaf(key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
+func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
 	i, isEqual := node.findIndexInLeafByKey(key)
 	if isEqual { // key already exists, update value only
 		err := node.updateVal(i, val)
@@ -491,9 +400,8 @@ func (node *Node) insertKVInLeaf(key, val []byte) (promotedKey []byte, newSiblin
 	node.insertKvInPos(i, key, val)
 	node.setNKeys(node.nKeys() + 1)
 	if node.needSplit() {
-		db := node.db
 		deg := node.degree()
-		rightSibling := newLeafNode(db)
+		rightSibling := db.newLeafNode()
 		nLeft := deg / 2
 		nRight := deg - nLeft
 		l := node.nKeys() - 1
@@ -523,4 +431,33 @@ func (db *DB) loadMetaBlock() {
 func (db *DB) Close() {
 	db.mmap.Unmap()
 	db.file.Close()
+}
+
+func (db *DB) loadNode(blockId int) *Node {
+	start := Offset(blockId*BLOCK_SIZE + BLOCK_MAGIC_SIZE) // skip block magic
+	nodeBlock := utils.GetRootAsNodeBlock(db.mmap[start:], 0)
+	return &Node{
+		blockId:   blockId,
+		mmap:      db.mmap,
+		metaBlock: db.metaBlock,
+		NodeBlock: nodeBlock,
+	}
+}
+
+func (db *DB) newLeafNode() *Node {
+	return db.newNode(true)
+}
+func (db *DB) newInternalNode() *Node {
+	return db.newNode(false)
+}
+
+func (db *DB) newNode(isLeaf bool) *Node {
+	blockId, start := db.blockMgr.newBlock()
+	nodeBlock := newNodeBlock(db.mmap[start:], int(*db.metaBlock.Degree()), isLeaf)
+	return &Node{
+		blockId:   int(blockId),
+		mmap:      db.mmap,
+		metaBlock: db.metaBlock,
+		NodeBlock: nodeBlock,
+	}
 }

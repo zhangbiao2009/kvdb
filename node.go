@@ -8,14 +8,104 @@ import (
 	"io"
 	"os"
 
+	"github.com/edsrzf/mmap-go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
 
 type Node struct {
-	db        *DB
 	blockId   int
 	metaBlock *utils.MetaBlock
+	mmap      mmap.MMap
 	*utils.NodeBlock
+}
+
+func (node *Node) removeMinKeyAndBlockId() (key []byte, blockId int) {
+	return node.delKeyandBlockIdByIndex(0, 0)
+}
+
+func (node *Node) appendMaxKeyAndBlockId(key []byte, blockId int) {
+	nKeys := node.nKeys()
+	node.insertKeyInPos(nKeys, key)
+	node.setChildBlockId(nKeys+1, blockId)
+	node.setNKeys(nKeys + 1)
+}
+
+func (node *Node) delKeyandBlockIdByIndex(keyStart, blockIdStart int) ([]byte, int) {
+	deletedKey := node.getKey(keyStart)
+	deletedBlockId := node.getChildBlockId(blockIdStart)
+	node.clearKey(keyStart) // note: 虽然似乎没用，因为后面的for循环会覆盖这个，但这会正确更新actualMemRequired
+	for j := keyStart + 1; j < node.nKeys(); j++ {
+		node.setKeyPtr(j-1, node.getKeyPtr(j))
+	}
+	node.clearKeyPtr(node.nKeys() - 1)
+	for j := blockIdStart + 1; j <= node.nKeys(); j++ {
+		node.setChildBlockId(j-1, node.getChildBlockId(j))
+	}
+	node.setChildBlockId(node.nKeys(), 0)
+	node.setNKeys(node.nKeys() - 1)
+	return deletedKey, deletedBlockId
+}
+
+func (node *Node) removeMaxKeyAndBlockId() (key []byte, blockId int) {
+	lastKeyIdx := node.nKeys() - 1
+	lastBlockIdIdx := node.nKeys()
+	return node.delKeyandBlockIdByIndex(lastKeyIdx, lastBlockIdIdx)
+}
+
+func (node *Node) appendMinKeyAndBlockId(key []byte, ptr int) {
+	node.setNKeys(node.nKeys() + 1)
+	for j := node.nKeys() - 1; j > 0; j-- {
+		node.setKeyPtr(j, node.getKeyPtr(j-1))
+	}
+	for j := node.nKeys(); j > 0; j-- {
+		node.setChildBlockId(j, node.getChildBlockId(j-1))
+	}
+	node.insertKeyInPos(0, key)
+	node.setChildBlockId(0, ptr)
+}
+
+func (node *Node) deleteInLeaf(key []byte) {
+	i, isEqual := node.findIndexInLeafByKey(key)
+	if !isEqual { // not found
+		return
+	}
+	// assert key == node.keys[i], delete
+	node.delKeyValByIndex(i)
+	if node.nKeys() == 0 { // 完全delete空了，compact一下就没有垃圾了，并且重置了unused_mem_offset，hexdump好看一点
+		node.compactMem()
+	}
+}
+
+func (node *Node) delKeyValByIndex(i int) {
+	node.clearKey(i) // note: 虽然似乎没用，因为后面的for循环会覆盖这个key指针，但这会正确更新actualMemRequired
+	node.clearVal(i)
+	for j := i + 1; j < node.nKeys(); j++ {
+		node.setKeyPtr(j-1, node.getKeyPtr(j))
+		node.setValPtr(j-1, node.getValPtr(j))
+	}
+	node.clearKeyPtr(node.nKeys() - 1)
+	node.clearValPtr(node.nKeys() - 1)
+	node.MutateNkeys(*node.Nkeys() - 1)
+}
+
+func (node *Node) removeMinKeyVal() (key, val []byte) {
+	key = node.getKey(0)
+	val = node.getVal(0)
+	node.delKeyValByIndex(0)
+	return
+}
+
+func (node *Node) removeMaxKeyVal() (key, val []byte) {
+	nkeys := node.nKeys()
+	key = node.getKey(nkeys - 1)
+	val = node.getVal(nkeys - 1)
+	node.delKeyValByIndex(nkeys - 1)
+	return
+}
+
+func (node *Node) appendMaxKeyVal(key, val []byte) {
+	node.insertKvInPos(node.nKeys(), key, val)
+	node.setNKeys(node.nKeys() + 1)
 }
 
 func (node *Node) getLeftMostKey() []byte {
@@ -92,7 +182,7 @@ func (node *Node) insertValInPos(i int, val []byte) (uint16, error) {
 func (node *Node) appendToFreeMem(content []byte) (contentOffset int, contentSize uint16) {
 	ununsedOffset := int(*node.UnusedMemOffset())
 	freeMemOffset := ununsedOffset + node.blockId*BLOCK_SIZE
-	size := putByteSlice(node.db.mmap[freeMemOffset:], content)
+	size := putByteSlice(node.mmap[freeMemOffset:], content)
 	node.MutateUnusedMemOffset(uint16(ununsedOffset + size))
 	return freeMemOffset, uint16(size) // TODO: 如果允许超大的value(跨越多个block的)， uint16也许不够表示value的size
 }
@@ -137,7 +227,7 @@ func (node *Node) compactMem() {
 		}
 	}
 	// copy compact之后的内容，顺带清空没用的空间
-	copy(node.db.mmap[node.blockId*BLOCK_SIZE+unusedMemStart:], tmpMem)
+	copy(node.mmap[node.blockId*BLOCK_SIZE+unusedMemStart:], tmpMem)
 	node.MutateUnusedMemOffset(uint16(unusedMemStart + start))
 }
 
@@ -199,23 +289,23 @@ func (node *Node) setNKeys(nKeys int) {
 
 func (node *Node) getKey(i int) []byte {
 	keyOffset := node.getKeyPtr(i)
-	return getByteSlice(node.db.mmap[keyOffset:])
+	return getByteSlice(node.mmap[keyOffset:])
 }
 
 func (node *Node) getKeySize(i int) uint16 { // 返回key在block内存中占用的空间大小
 	keyOffset := node.getKeyPtr(i)
-	sz := getByteSliceSize(node.db.mmap[keyOffset:])
+	sz := getByteSliceSize(node.mmap[keyOffset:])
 	return uint16(sz)
 }
 
 func (node *Node) getVal(i int) []byte {
 	valOffset := node.getValPtr(i)
-	return getByteSlice(node.db.mmap[valOffset:])
+	return getByteSlice(node.mmap[valOffset:])
 }
 
 func (node *Node) getValSize(i int) uint16 { // 返回val在block内存中占用的空间大小
 	valOffset := node.getValPtr(i)
-	sz := getByteSliceSize(node.db.mmap[valOffset:])
+	sz := getByteSliceSize(node.mmap[valOffset:])
 	return uint16(sz)
 }
 
@@ -308,36 +398,6 @@ func (node *Node) printDotGraphLeaf(w io.Writer) {
 			fmt.Fprintf(w, "\"node%d\":f%d -> \"node%d\":f0;\n", node.id, nextPtrFid, node.next.getNodeId()) // for next ptr edge
 		}
 	*/
-}
-
-// TODO: 考虑去掉db参数
-func loadNode(db *DB, blockId int) *Node {
-	start := Offset(blockId*BLOCK_SIZE + BLOCK_MAGIC_SIZE) // skip block magic
-	nodeBlock := utils.GetRootAsNodeBlock(db.mmap[start:], 0)
-	return &Node{
-		db:        db,
-		blockId:   blockId,
-		metaBlock: db.metaBlock,
-		NodeBlock: nodeBlock,
-	}
-}
-
-func newLeafNode(db *DB) *Node {
-	return newNode(db, true)
-}
-func newInternalNode(db *DB) *Node {
-	return newNode(db, false)
-}
-
-func newNode(db *DB, isLeaf bool) *Node {
-	blockId, start := db.blockMgr.newBlock()
-	nodeBlock := newNodeBlock(db.mmap[start:], int(*db.metaBlock.Degree()), isLeaf)
-	return &Node{
-		db:        db,
-		blockId:   int(blockId),
-		metaBlock: db.metaBlock,
-		NodeBlock: nodeBlock,
-	}
 }
 
 func newNodeBlock(outputBuf []byte, degree int, isLeaf bool) *utils.NodeBlock {
