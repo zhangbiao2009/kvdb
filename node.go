@@ -22,20 +22,33 @@ func (node *Node) getLeftMostKey() []byte {
 	return node.getKey(0)
 }
 
-func (node *Node) findByKey(key []byte) ([]byte, error) {
+// 在叶子节点上，找key在的或者应该在的index，如果是相等的情况isEqual为true
+func (node *Node) findIndexInLeafByKey(key []byte) (index int, isEqual bool) {
 	i := 0
 	for ; i < node.nKeys(); i++ {
 		k := node.getKey(i)
 		cmp := bytes.Compare(key, k)
 		if cmp == 0 { // found
-			val := node.getVal(i)
-			return val, nil
+			return i, true
 		}
 		if cmp < 0 {
-			return nil, ERR_KEY_NOT_EXIST
+			break
 		}
 	}
-	return nil, ERR_KEY_NOT_EXIST
+	return i, false
+}
+
+// 在中间节点上操作，返回key应该在的child的index
+func (node *Node) findChildIndexByKey(key []byte) int {
+	i := 0
+	for ; i < node.nKeys(); i++ {
+		k := node.getKey(i)
+		cmp := bytes.Compare(key, k)
+		if cmp < 0 {
+			break
+		}
+	}
+	return i
 }
 
 func (node *Node) insertKvInPos(i int, key, val []byte) error {

@@ -3,7 +3,6 @@ package btreedb
 import (
 	"btreedb/utils"
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -191,17 +190,14 @@ func (db *DB) printDebugInfo(blockId int) {
 func (db *DB) find(blockId int, key []byte) ([]byte, error) {
 	node := loadNode(db, blockId)
 	if node.isLeaf() {
-		val, err := node.findByKey(key)
-		return val, err
-	}
-	i := 0
-	for ; i < node.nKeys(); i++ {
-		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
-		if cmp < 0 {
-			break
+		i, isEqual := node.findIndexInLeafByKey(key)
+		if !isEqual {
+			return nil, ERR_KEY_NOT_EXIST
 		}
+		val := node.getVal(i)
+		return val, nil
 	}
+	i := node.findChildIndexByKey(key)
 	childBlockId := node.getChildBlockId(i)
 	return db.find(childBlockId, key)
 }
@@ -218,21 +214,10 @@ func (db *DB) Delete(key []byte) {
 }
 
 func (node *Node) deleteInLeaf(key []byte) {
-	if node.nKeys() == 0 { // 这种情况只有root为leaf节点，并且没有key的情况下才会发生
+	i, isEqual := node.findIndexInLeafByKey(key)
+	if !isEqual { // not found
 		return
 	}
-	i := 0
-	for ; i < node.nKeys(); i++ {
-		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
-		if cmp < 0 {
-			return
-		}
-		if cmp == 0 {
-			break
-		}
-	}
-
 	// assert key == node.keys[i], delete
 	node.delKeyValByIndex(i)
 	if node.nKeys() == 0 { // 完全delete空了，compact一下就没有垃圾了，并且重置了unused_mem_offset，hexdump好看一点
@@ -303,14 +288,7 @@ func (db *DB) delete(node *Node, key []byte) {
 		node.deleteInLeaf(key)
 		return
 	}
-	i := 0
-	for ; i < node.nKeys(); i++ {
-		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
-		if cmp < 0 {
-			break
-		}
-	}
+	i := node.findChildIndexByKey(key)
 	childBlockId := node.getChildBlockId(i)
 	childNode := loadNode(db, childBlockId)
 	db.delete(childNode, key)
@@ -454,15 +432,7 @@ func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSibli
 		return node.insertKVInLeaf(key, val)
 	}
 	// internal node
-	i := 0
-	for ; i < node.nKeys(); i++ {
-		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
-		if cmp < 0 {
-			break
-		}
-	}
-
+	i := node.findChildIndexByKey(key)
 	childBlockId := node.getChildBlockId(i)
 	childPromtedKey, newChild, err := db.insert(childBlockId, key, val)
 	if err != nil {
@@ -508,17 +478,10 @@ func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSibli
 }
 
 func (node *Node) insertKVInLeaf(key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
-	i := 0
-	for ; i < node.nKeys(); i++ {
-		k := node.getKey(i)
-		cmp := bytes.Compare(key, k)
-		if cmp == 0 { // key already exists, update value only
-			err := node.updateVal(i, val)
-			return nil, nil, err
-		}
-		if cmp < 0 {
-			break
-		}
+	i, isEqual := node.findIndexInLeafByKey(key)
+	if isEqual { // key already exists, update value only
+		err := node.updateVal(i, val)
+		return nil, nil, err
 	}
 	// i is the plact to insert
 	for l := node.nKeys() - 1; l >= i; l-- {
