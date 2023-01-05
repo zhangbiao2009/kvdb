@@ -3,6 +3,7 @@ package btreedb
 import (
 	"btreedb/utils"
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -87,20 +88,8 @@ func (db *DB) Init(degree int) {
 func (db *DB) Insert(key, val []byte) error {
 	meta := db.metaBlock
 	rootBlockId := int(*meta.RootBlockId())
-	promotedKey, rightSibling, err := db.insert(rootBlockId, key, val)
-	if err != nil {
-		return err
-	}
-	if rightSibling == nil {
-		return nil
-	}
-	newRoot := db.newInternalNode()
-	newRoot.insertKeyInPos(0, promotedKey)
-	newRoot.setNKeys(1)
-	newRoot.setChildBlockId(0, rootBlockId)
-	newRoot.setChildBlockId(1, rightSibling.blockId)
-	meta.MutateRootBlockId(uint32(newRoot.blockId))
-	return nil
+	rootNode := db.loadNode(rootBlockId)
+	return db.insert(rootNode, 0, nil, key, val)
 }
 
 func (db *DB) Find(key []byte) ([]byte, error) {
@@ -335,67 +324,30 @@ func (db *DB) mergeWithRight(left *Node, right *Node, parentKey []byte) {
 	db.blockMgr.recycleBlock(right)
 }
 
-func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
-	node := db.loadNode(blockId)
+func (db *DB) insert(curr *Node, i int, parent *Node, key, val []byte) (err error) {
+	node := curr
+	if curr.needSplit() {
+		promotedKey, rightSibling := db.split(curr, i, parent)
+		if bytes.Compare(key, promotedKey) >= 0 {
+			node = rightSibling // 这种情况需要insert到right node里
+		}
+	}
 	if node.isLeaf() {
 		return db.insertKVInLeaf(node, key, val)
 	}
 	// internal node
-	i := node.findChildIndexByKey(key)
-	childBlockId := node.getChildBlockId(i)
-	childPromtedKey, newChild, err := db.insert(childBlockId, key, val)
-	if err != nil {
-		return nil, nil, err
-	}
-	if newChild == nil { // no new child to insert
-		return nil, nil, nil
-	}
-	// assert newChild != nil
-	for l := node.nKeys() - 1; l >= i; l-- {
-		node.setKeyPtr(l+1, node.getKeyPtr(l))
-		node.setChildBlockId(l+2, node.getChildBlockId(l+1))
-	}
-	node.insertKeyInPos(i, childPromtedKey) // TODO: 因为key是通过key指针数组操作的，这里想要新分配一个key值，现在setKey还是insertKey语义有点不清晰，后续整理
-	node.setChildBlockId(i+1, newChild.blockId)
-	node.setNKeys(node.nKeys() + 1)
-
-	if node.needSplit() {
-		promotedKey, newSiblingNode = db.split(node)
-		return
-	}
-	return nil, nil, nil
+	childIdx := node.findChildIndexByKey(key)
+	childBlockId := node.getChildBlockId(childIdx)
+	childNode := db.loadNode(childBlockId)
+	return db.insert(childNode, childIdx, node, key, val)
 }
 
-func (db *DB) split(node *Node) (promotedKey []byte, newSiblingNode *Node) {
-	deg := node.degree()
-	rightSibling := db.newInternalNode()
-	nLeft := deg / 2
-	nRight := deg - nLeft - 1
-	l := node.nKeys() - 1
-
-	for r := nRight - 1; r >= 0; r-- {
-		rightSibling.insertKeyInPos(r, node.getKey(l))
-		rightSibling.setChildBlockId(r+1, node.getChildBlockId(l+1))
-		node.clearKey(l)
-		node.setChildBlockId(l+1, 0)
-		l--
-	}
-	rightSibling.setChildBlockId(0, node.getChildBlockId(l+1)) // 最左边的ptr
-	node.setChildBlockId(l+1, 0)
-
-	pKey := node.getKey(l)
-	node.clearKey(l)
-	node.setNKeys(nLeft)
-	node.compactMem()
-	rightSibling.setNKeys(nRight)
-	return pKey, rightSibling
-}
-
-func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
+// assert: there is enough space to insert the key and the val
+func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (err error) {
 	i, isEqual := node.findIndexInLeafByKey(key)
 	if isEqual { // key already exists, update value only
 		err := node.updateVal(i, val)
-		return nil, nil, err
+		return err
 	}
 	// i is the plact to insert
 	for l := node.nKeys() - 1; l >= i; l-- {
@@ -404,16 +356,34 @@ func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (promotedKey []byte, n
 	}
 	node.insertKvInPos(i, key, val)
 	node.setNKeys(node.nKeys() + 1)
-	if node.needSplit() {
-		promotedKey, newSiblingNode = db.splitInLeaf(node)
-		return
-	}
-	return nil, nil, nil
+	return nil
 }
 
-func (db *DB) splitInLeaf(node *Node) (promotedKey []byte, newSiblingNode *Node) {
+func (db *DB) split(curr *Node, i int, parent *Node) (promotedKey []byte, rightSibling *Node) {
+	if curr.isLeaf() {
+		promotedKey, rightSibling = db.splitLeaf(curr)
+	} else {
+		promotedKey, rightSibling = db.splitInternal(curr)
+	}
+	if parent != nil {
+		parent.insertNewChild(i, promotedKey, rightSibling)
+	} else {
+		// 没有parent，是root node要split
+		meta := db.metaBlock
+		rootBlockId := int(*meta.RootBlockId())
+		newRoot := db.newInternalNode()
+		newRoot.insertKeyInPos(0, promotedKey)
+		newRoot.setNKeys(1)
+		newRoot.setChildBlockId(0, rootBlockId)
+		newRoot.setChildBlockId(1, rightSibling.blockId)
+		meta.MutateRootBlockId(uint32(newRoot.blockId))
+	}
+	return
+}
+
+func (db *DB) splitLeaf(node *Node) (promotedKey []byte, rightSibling *Node) {
 	deg := node.degree()
-	rightSibling := db.newLeafNode()
+	rightSibling = db.newLeafNode()
 	nLeft := deg / 2
 	nRight := deg - nLeft
 	l := node.nKeys() - 1
@@ -428,7 +398,46 @@ func (db *DB) splitInLeaf(node *Node) (promotedKey []byte, newSiblingNode *Node)
 	node.setNKeys(nLeft)
 	node.compactMem()
 	rightSibling.setNKeys(nRight)
-	return rightSibling.getKey(0), rightSibling
+	promotedKey = rightSibling.getKey(0)
+	return promotedKey, rightSibling
+}
+
+func (db *DB) splitInternal(node *Node) (promotedKey []byte, rightSibling *Node) {
+	deg := node.degree()
+	rightSibling = db.newInternalNode()
+	nLeft := deg / 2
+	nRight := deg - nLeft - 1
+	l := node.nKeys() - 1
+
+	for r := nRight - 1; r >= 0; r-- {
+		rightSibling.insertKeyInPos(r, node.getKey(l))
+		rightSibling.setChildBlockId(r+1, node.getChildBlockId(l+1))
+		node.clearKey(l)
+		node.setChildBlockId(l+1, 0)
+		l--
+	}
+	rightSibling.setChildBlockId(0, node.getChildBlockId(l+1)) // 最左边的ptr
+	node.setChildBlockId(l+1, 0)
+
+	promotedKey = node.getKey(l)
+	node.clearKey(l)
+	node.setNKeys(nLeft)
+	node.compactMem()
+	rightSibling.setNKeys(nRight)
+	return promotedKey, rightSibling
+}
+
+// 在i处新增一个child？？
+func (node *Node) insertNewChild(i int, childPromtedKey []byte, newChild *Node) {
+	// assert newChild != nil
+	for l := node.nKeys() - 1; l >= i; l-- {
+		node.setKeyPtr(l+1, node.getKeyPtr(l))
+		node.setChildBlockId(l+2, node.getChildBlockId(l+1))
+	}
+	node.insertKeyInPos(i, childPromtedKey) // TODO: 因为key是通过key指针数组操作的，这里想要新分配一个key值，现在setKey还是insertKey语义有点不清晰，后续整理
+	node.setChildBlockId(i+1, newChild.blockId)
+	node.setNKeys(node.nKeys() + 1)
+
 }
 
 func (db *DB) loadMetaBlock() {
