@@ -360,30 +360,35 @@ func (db *DB) insert(blockId int, key, val []byte) (promotedKey []byte, newSibli
 	node.setNKeys(node.nKeys() + 1)
 
 	if node.needSplit() {
-		deg := node.degree()
-		rightSibling := db.newInternalNode()
-		nLeft := deg / 2
-		nRight := deg - nLeft - 1
-		l := node.nKeys() - 1
-
-		for r := nRight - 1; r >= 0; r-- {
-			rightSibling.insertKeyInPos(r, node.getKey(l))
-			rightSibling.setChildBlockId(r+1, node.getChildBlockId(l+1))
-			node.clearKey(l)
-			node.setChildBlockId(l+1, 0)
-			l--
-		}
-		rightSibling.setChildBlockId(0, node.getChildBlockId(l+1)) // 最左边的ptr
-		node.setChildBlockId(l+1, 0)
-
-		pKey := node.getKey(l)
-		node.clearKey(l)
-		node.setNKeys(nLeft)
-		node.compactMem()
-		rightSibling.setNKeys(nRight)
-		return pKey, rightSibling, nil
+		promotedKey, newSiblingNode = db.split(node)
+		return
 	}
 	return nil, nil, nil
+}
+
+func (db *DB) split(node *Node) (promotedKey []byte, newSiblingNode *Node) {
+	deg := node.degree()
+	rightSibling := db.newInternalNode()
+	nLeft := deg / 2
+	nRight := deg - nLeft - 1
+	l := node.nKeys() - 1
+
+	for r := nRight - 1; r >= 0; r-- {
+		rightSibling.insertKeyInPos(r, node.getKey(l))
+		rightSibling.setChildBlockId(r+1, node.getChildBlockId(l+1))
+		node.clearKey(l)
+		node.setChildBlockId(l+1, 0)
+		l--
+	}
+	rightSibling.setChildBlockId(0, node.getChildBlockId(l+1)) // 最左边的ptr
+	node.setChildBlockId(l+1, 0)
+
+	pKey := node.getKey(l)
+	node.clearKey(l)
+	node.setNKeys(nLeft)
+	node.compactMem()
+	rightSibling.setNKeys(nRight)
+	return pKey, rightSibling
 }
 
 func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (promotedKey []byte, newSiblingNode *Node, err error) {
@@ -400,25 +405,30 @@ func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (promotedKey []byte, n
 	node.insertKvInPos(i, key, val)
 	node.setNKeys(node.nKeys() + 1)
 	if node.needSplit() {
-		deg := node.degree()
-		rightSibling := db.newLeafNode()
-		nLeft := deg / 2
-		nRight := deg - nLeft
-		l := node.nKeys() - 1
-		for r := nRight - 1; r >= 0; r-- {
-			k := node.getKey(l)
-			v := node.getVal(l)
-			rightSibling.insertKvInPos(r, k, v)
-			node.clearKey(l)
-			node.clearVal(l)
-			l--
-		}
-		node.setNKeys(nLeft)
-		node.compactMem()
-		rightSibling.setNKeys(nRight)
-		return rightSibling.getKey(0), rightSibling, nil
+		promotedKey, newSiblingNode = db.splitInLeaf(node)
+		return
 	}
 	return nil, nil, nil
+}
+
+func (db *DB) splitInLeaf(node *Node) (promotedKey []byte, newSiblingNode *Node) {
+	deg := node.degree()
+	rightSibling := db.newLeafNode()
+	nLeft := deg / 2
+	nRight := deg - nLeft
+	l := node.nKeys() - 1
+	for r := nRight - 1; r >= 0; r-- {
+		k := node.getKey(l)
+		v := node.getVal(l)
+		rightSibling.insertKvInPos(r, k, v)
+		node.clearKey(l)
+		node.clearVal(l)
+		l--
+	}
+	node.setNKeys(nLeft)
+	node.compactMem()
+	rightSibling.setNKeys(nRight)
+	return rightSibling.getKey(0), rightSibling
 }
 
 func (db *DB) loadMetaBlock() {
