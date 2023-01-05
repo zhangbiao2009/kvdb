@@ -204,8 +204,8 @@ func (db *DB) Delete(key []byte) {
 
 func (db *DB) stealFromLeftLeaf(node *Node, left *Node) (midKey []byte) {
 	key, val := left.removeMaxKeyVal()
-	db.insertKVInLeaf(node, key, val) // TODO: 是不是专门写个函数会好一点，不调用insertKv；
-	return key                        // note: key is exactly the min key in curr
+	db.insertKVInLeaf(node, key, val)
+	return key // note: key is exactly the min key in curr
 }
 
 func (db *DB) stealFromRightLeaf(node *Node, right *Node) (midKey []byte) {
@@ -241,21 +241,26 @@ func (db *DB) delete(node *Node, key []byte) {
 	minKeys := int(*meta.Degree()) / 2
 	if childNode.nKeys() < minKeys { // number of keys too small after deletion
 		// try to steal from siblings
-		// right sibling exists and can steal
-		rightBlockId := node.getChildBlockId(i + 1)
-		rightNode := db.loadNode(rightBlockId)
-		if i+1 <= node.nKeys() && rightNode.nKeys() > minKeys {
-			midKey := db.stealFromRight(childNode, rightNode, node.getKey(i))
-			node.updateKey(i, midKey) // update the key
-			return
+
+		var leftNode, rightNode *Node
+		if i+1 <= node.nKeys() { // right sibling exists
+			rightBlockId := node.getChildBlockId(i + 1)
+			rightNode = db.loadNode(rightBlockId)
+			if rightNode.nKeys() > minKeys { // can steal
+				midKey := db.stealFromRight(childNode, rightNode, node.getKey(i))
+				node.updateKey(i, midKey) // update the key
+				return
+			}
 		}
-		// left sibling exists and can steal
-		leftBlockId := node.getChildBlockId(i - 1)
-		leftNode := db.loadNode(leftBlockId)
-		if i-1 >= 0 && leftNode.nKeys() > minKeys {
-			midKey := db.stealFromLeft(childNode, leftNode, node.getKey(i-1))
-			node.updateKey(i-1, midKey)
-			return
+
+		if i-1 >= 0 { // left sibling exists
+			leftBlockId := node.getChildBlockId(i - 1)
+			leftNode = db.loadNode(leftBlockId)
+			if leftNode.nKeys() > minKeys { // can steal
+				midKey := db.stealFromLeft(childNode, leftNode, node.getKey(i-1))
+				node.updateKey(i-1, midKey)
+				return
+			}
 		}
 
 		// if steal not possible, try to merge
@@ -385,7 +390,7 @@ func (db *DB) splitLeaf(node *Node) (promotedKey []byte, rightSibling *Node) {
 	deg := node.degree()
 	rightSibling = db.newLeafNode()
 	nLeft := deg / 2
-	nRight := deg - nLeft
+	nRight := node.nKeys() - nLeft
 	l := node.nKeys() - 1
 	for r := nRight - 1; r >= 0; r-- {
 		k := node.getKey(l)
@@ -406,7 +411,7 @@ func (db *DB) splitInternal(node *Node) (promotedKey []byte, rightSibling *Node)
 	deg := node.degree()
 	rightSibling = db.newInternalNode()
 	nLeft := deg / 2
-	nRight := deg - nLeft - 1
+	nRight := node.nKeys() - nLeft - 1
 	l := node.nKeys() - 1
 
 	for r := nRight - 1; r >= 0; r-- {
@@ -425,19 +430,6 @@ func (db *DB) splitInternal(node *Node) (promotedKey []byte, rightSibling *Node)
 	node.compactMem()
 	rightSibling.setNKeys(nRight)
 	return promotedKey, rightSibling
-}
-
-// 在i处新增一个child？？
-func (node *Node) insertNewChild(i int, childPromtedKey []byte, newChild *Node) {
-	// assert newChild != nil
-	for l := node.nKeys() - 1; l >= i; l-- {
-		node.setKeyPtr(l+1, node.getKeyPtr(l))
-		node.setChildBlockId(l+2, node.getChildBlockId(l+1))
-	}
-	node.insertKeyInPos(i, childPromtedKey) // TODO: 因为key是通过key指针数组操作的，这里想要新分配一个key值，现在setKey还是insertKey语义有点不清晰，后续整理
-	node.setChildBlockId(i+1, newChild.blockId)
-	node.setNKeys(node.nKeys() + 1)
-
 }
 
 func (db *DB) loadMetaBlock() {

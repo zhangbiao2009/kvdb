@@ -52,7 +52,19 @@ func (node *Node) removeMaxKeyAndBlockId() (key []byte, blockId int) {
 	return node.delKeyandBlockIdByIndex(lastKeyIdx, lastBlockIdIdx)
 }
 
-func (node *Node) appendMinKeyAndBlockId(key []byte, ptr int) {
+// 在i处新增一个child
+func (node *Node) insertNewChild(i int, childPromtedKey []byte, newChild *Node) {
+	// assert newChild != nil
+	for l := node.nKeys() - 1; l >= i; l-- {
+		node.setKeyPtr(l+1, node.getKeyPtr(l))
+		node.setChildBlockId(l+2, node.getChildBlockId(l+1))
+	}
+	node.insertKeyInPos(i, childPromtedKey)
+	node.setChildBlockId(i+1, newChild.blockId)
+	node.setNKeys(node.nKeys() + 1)
+}
+
+func (node *Node) appendMinKeyAndBlockId(key []byte, ptr int) { // TODO: 跟insertNewChild的逻辑有些重复，是否能合并
 	node.setNKeys(node.nKeys() + 1)
 	for j := node.nKeys() - 1; j > 0; j-- {
 		node.setKeyPtr(j, node.getKeyPtr(j-1))
@@ -280,7 +292,7 @@ func (node *Node) nKeys() int {
 }
 
 func (node *Node) needSplit() bool {
-	return node.nKeys() == node.degree()
+	return node.nKeys() == node.degree()-1
 }
 
 func (node *Node) setNKeys(nKeys int) {
@@ -406,24 +418,26 @@ func newNodeBlock(outputBuf []byte, degree int, isLeaf bool) *utils.NodeBlock {
 	var childBlockIdArr flatbuffers.UOffsetT
 	var valPtrArr flatbuffers.UOffsetT
 	if isLeaf {
-		utils.NodeBlockStartValPtrArrVector(builder, degree)
-		for i := degree - 1; i >= 0; i-- {
+		vecSize := degree - 1
+		utils.NodeBlockStartValPtrArrVector(builder, vecSize)
+		for i := vecSize - 1; i >= 0; i-- {
 			builder.PrependUint16(0)
 		}
-		valPtrArr = builder.EndVector(degree)
+		valPtrArr = builder.EndVector(vecSize)
 	} else {
-		utils.NodeBlockStartChildNodeIdVector(builder, degree+1)
-		for i := degree; i >= 0; i-- {
+		vecSize := degree
+		utils.NodeBlockStartChildNodeIdVector(builder, vecSize)
+		for i := vecSize - 1; i >= 0; i-- {
 			builder.PrependUint32(0)
 		}
-		childBlockIdArr = builder.EndVector(degree)
+		childBlockIdArr = builder.EndVector(vecSize)
 	}
-
-	utils.NodeBlockStartKeyPtrArrVector(builder, degree)
-	for i := degree - 1; i >= 0; i-- {
+	vecSize := degree - 1
+	utils.NodeBlockStartKeyPtrArrVector(builder, vecSize)
+	for i := vecSize - 1; i >= 0; i-- {
 		builder.PrependUint16(0)
 	}
-	keyPtrArr := builder.EndVector(degree)
+	keyPtrArr := builder.EndVector(vecSize)
 
 	utils.NodeBlockStart(builder)
 	utils.NodeBlockAddIsLeaf(builder, isLeaf)
