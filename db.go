@@ -365,23 +365,24 @@ func (db *DB) insertKVInLeaf(node *Node, key, val []byte) (err error) {
 }
 
 func (db *DB) split(curr *Node, i int, parent *Node) (promotedKey []byte, rightSibling *Node) {
-	if curr.isLeaf() {
-		promotedKey, rightSibling = db.splitLeaf(curr)
+	node := curr
+	if parent == nil { // 没有parent，是root node要split
+		node = db.duplicateNode(curr) // dup一个新节点然后分裂，保留curr node
+	}
+	if node.isLeaf() {
+		promotedKey, rightSibling = db.splitLeaf(node)
 	} else {
-		promotedKey, rightSibling = db.splitInternal(curr)
+		promotedKey, rightSibling = db.splitInternal(node)
 	}
 	if parent != nil {
 		parent.insertNewChild(i, promotedKey, rightSibling)
 	} else {
-		// 没有parent，是root node要split
-		meta := db.metaBlock
-		rootBlockId := int(*meta.RootBlockId())
-		newRoot := db.newInternalNode()
-		newRoot.insertKeyInPos(0, promotedKey)
-		newRoot.setNKeys(1)
-		newRoot.setChildBlockId(0, rootBlockId)
-		newRoot.setChildBlockId(1, rightSibling.blockId)
-		meta.MutateRootBlockId(uint32(newRoot.blockId))
+		// node 和 rightSibling都建立起来了，让curr指向他们，这样不用更新meta block里的root block id
+		db.rebuildAsInternalNode(curr)
+		curr.insertKeyInPos(0, promotedKey)
+		curr.setNKeys(1)
+		curr.setChildBlockId(0, node.blockId)
+		curr.setChildBlockId(1, rightSibling.blockId)
 	}
 	return
 }
@@ -453,6 +454,26 @@ func (db *DB) loadNode(blockId int) *Node {
 		metaBlock: db.metaBlock,
 		NodeBlock: nodeBlock,
 	}
+}
+
+func (db *DB) duplicateNode(node *Node) (nodeDup *Node) {
+	nodeDupBlockId, nodeDupStart := db.blockMgr.newBlock()
+	nodeStart := node.blockId*BLOCK_SIZE + BLOCK_MAGIC_SIZE
+	copyLen := BLOCK_SIZE - BLOCK_MAGIC_SIZE
+	copy(db.mmap[nodeDupStart:], db.mmap[nodeStart:nodeStart+copyLen]) // 因为每个node block的内容里不包括block id，所以直接copy是可行的
+	nodeBlockDup := utils.GetRootAsNodeBlock(db.mmap[nodeDupStart:], 0)
+	nodeDup = &Node{
+		blockId:   int(nodeDupBlockId),
+		mmap:      db.mmap,
+		metaBlock: db.metaBlock,
+		NodeBlock: nodeBlockDup,
+	}
+	return nodeDup
+}
+
+func (db *DB) rebuildAsInternalNode(node *Node) {
+	_, start := node.clearNodeContent()
+	node.NodeBlock = newNodeBlock(db.mmap[start:], int(*db.metaBlock.Degree()), false)
 }
 
 func (db *DB) newLeafNode() *Node {

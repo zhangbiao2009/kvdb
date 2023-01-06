@@ -389,6 +389,18 @@ func (node *Node) DebugInfo() {
 	fmt.Println()
 }
 
+func (node *Node) clearNodeContent() (blockId int, start int) {
+	blockId = node.blockId
+	start = blockId*BLOCK_SIZE + BLOCK_MAGIC_SIZE // TODO：这个东西出现的地方太多了，最好聚集到一个地方
+	unusedOffset := node.UnusedMemOffset()
+	end := blockId*BLOCK_SIZE + int(*unusedOffset)
+	mmap := node.mmap
+	for i := start; i < end; i++ {
+		mmap[i] = 0
+	}
+	return
+}
+
 func (node *Node) printDotGraphLeaf(w io.Writer) {
 	fmt.Fprintf(w, "node%d [label = \"", node.blockId)
 	fmt.Fprintf(w, "<f0> ") // for prev ptr
