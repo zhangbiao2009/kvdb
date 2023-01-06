@@ -196,9 +196,11 @@ func (db *DB) Delete(key []byte) {
 	rootNode := db.loadNode(rootBlockId)
 	db.delete(rootNode, key)
 	// 删除后，有可能root只剩下一个指针，没有key了，这时候需要去掉多余的root空节点
-	if !rootNode.isLeaf() && rootNode.nKeys() == 0 {
-		db.metaBlock.MutateRootBlockId(rootNode.ChildNodeId(0))
-		db.blockMgr.recycleBlock(rootNode) // 回收旧的root node block
+	if !rootNode.isLeaf() && rootNode.nKeys() == 0 { // 为保证root block id不变，要把指针指向的节点内容copy过来
+		childNodeId := rootNode.ChildNodeId(0)
+		childNode := db.loadNode(int(childNodeId))
+		db.copyNode(rootNode, childNode)
+		db.blockMgr.recycleBlock(childNode) // 回收没用的child node block
 	}
 }
 
@@ -454,6 +456,13 @@ func (db *DB) loadNode(blockId int) *Node {
 		metaBlock: db.metaBlock,
 		NodeBlock: nodeBlock,
 	}
+}
+
+func (db *DB) copyNode(dst, src *Node) { // 只copy mmap的内容，Node结构体本身不需要改变
+	_, dstStart := dst.clearNodeContent()
+	srcStart := src.blockId*BLOCK_SIZE + BLOCK_MAGIC_SIZE
+	copyLen := BLOCK_SIZE - BLOCK_MAGIC_SIZE
+	copy(db.mmap[dstStart:], db.mmap[srcStart:srcStart+copyLen])
 }
 
 func (db *DB) duplicateNode(node *Node) (nodeDup *Node) {
